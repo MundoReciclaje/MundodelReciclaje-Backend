@@ -109,6 +109,14 @@ function convertSQLiteToPostgreSQL(sql, params) {
         // Manejar las funciones de fecha
         .replace(/\bdate\('now'\)/gi, 'CURRENT_DATE')
         .replace(/\bdatetime\('now'\)/gi, 'CURRENT_TIMESTAMP')
+        // Convertir strftime SQLite a TO_CHAR PostgreSQL
+        .replace(/strftime\s*\(\s*'%Y-%m-%d'\s*,\s*([^)]+)\)/gi, "TO_CHAR($1, 'YYYY-MM-DD')")
+        .replace(/strftime\s*\(\s*'%Y-%m'\s*,\s*([^)]+)\)/gi, "TO_CHAR($1, 'YYYY-MM')")
+        .replace(/strftime\s*\(\s*'%Y'\s*,\s*([^)]+)\)/gi, "TO_CHAR($1, 'YYYY')")
+        .replace(/strftime\s*\(\s*'%m'\s*,\s*([^)]+)\)/gi, "TO_CHAR($1, 'MM')")
+        .replace(/strftime\s*\(\s*'%d'\s*,\s*([^)]+)\)/gi, "TO_CHAR($1, 'DD')")
+        // Agregar alias a subconsultas sin alias
+        .replace(/FROM\s*\(\s*SELECT[^)]+\)\s*(?!AS|[a-zA-Z_])/gi, (match) => match + ' AS subquery')
         // Manejar LIMIT y OFFSET (PostgreSQL los soporta igual)
         // Manejar subconsultas y JOINs (la mayoría son compatibles)
         ;

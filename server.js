@@ -43,6 +43,12 @@ app.use(helmet({
 
 // Middleware CORS
 app.use(cors({
+    origin: 'https://mundodel-reciclaje-deploy.vercel.app',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true
+}));
+
     origin: process.env.NODE_ENV === 'production' 
         ? ['https://mundodel-reciclaje-deploy.vercel.app'] 
     : ['http://localhost:3000', 'http://127.0.0.1:3000'],

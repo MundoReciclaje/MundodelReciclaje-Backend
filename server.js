@@ -61,95 +61,6 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(databaseMiddleware);
 
 // Función para crear tabla de usuarios si no existe (usando tu configuración existente)
-const inicializarTablasAuth = async () => {
-    try {
-        // Usar tu instancia de base de datos existente
-        const dbInstance = Database.getInstance();
-        
-        if (!dbInstance) {
-            throw new Error('No se pudo obtener la instancia de la base de datos');
-        }
-
-        // Crear tabla usuarios usando tu método ejecutarSQL
-        await new Promise((resolve, reject) => {
-            dbInstance.run(`
-                CREATE TABLE IF NOT EXISTS usuarios (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    nombre VARCHAR(100) NOT NULL,
-                    email VARCHAR(255) UNIQUE NOT NULL,
-                    password_hash VARCHAR(255) NOT NULL,
-                    rol VARCHAR(50) DEFAULT 'usuario',
-                    activo BOOLEAN DEFAULT 1,
-                    fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    fecha_actualizacion DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    ultimo_acceso DATETIME,
-                    intentos_fallidos INTEGER DEFAULT 0,
-                    bloqueado_hasta DATETIME NULL
-                )
-            `, (err) => {
-                if (err) reject(err);
-                else resolve();
-            });
-        });
-
-        // Crear índices
-        await new Promise((resolve, reject) => {
-            dbInstance.run(`CREATE INDEX IF NOT EXISTS idx_usuarios_email ON usuarios(email)`, (err) => {
-                if (err) reject(err);
-                else resolve();
-            });
-        });
-
-        await new Promise((resolve, reject) => {
-            dbInstance.run(`CREATE INDEX IF NOT EXISTS idx_usuarios_activo ON usuarios(activo)`, (err) => {
-                if (err) reject(err);
-                else resolve();
-            });
-        });
-
-        // ELIMINAR usuario admin existente y crear uno nuevo para garantizar contraseña correcta
-        await new Promise((resolve, reject) => {
-            dbInstance.run('DELETE FROM usuarios WHERE email = ?', ['admin@reciclaje.com'], (err) => {
-                if (err) reject(err);
-                else {
-                    console.log('Usuario administrador anterior eliminado (si existía)');
-                    resolve();
-                }
-            });
-        });
-
-        // Crear usuario administrador por defecto con contraseña correcta
-        const bcrypt = require('bcryptjs');
-        const passwordHash = await bcrypt.hash('admin123', 12);
-        
-        const resultado = await new Promise((resolve, reject) => {
-            dbInstance.run(`
-                INSERT INTO usuarios (nombre, email, password_hash, rol, activo) 
-                VALUES (?, ?, ?, ?, ?)
-            `, ['Administrador', 'admin@reciclaje.com', passwordHash, 'administrador', 1], function(err) {
-                if (err) reject(err);
-                else resolve({ lastID: this.lastID });
-            });
-        });
-        
-        console.log('Usuario administrador recreado: admin@reciclaje.com / admin123');
-        console.log('ID del usuario:', resultado.lastID);
-        
-        // Verificar que se creó correctamente
-        const usuarioVerificacion = await new Promise((resolve, reject) => {
-            dbInstance.get('SELECT id, email, rol, activo FROM usuarios WHERE email = ?', ['admin@reciclaje.com'], (err, row) => {
-                if (err) reject(err);
-                else resolve(row);
-            });
-        });
-        console.log('Verificación usuario creado:', usuarioVerificacion);
-
-        console.log('Tablas de autenticación inicializadas correctamente');
-    } catch (error) {
-        console.error('Error inicializando tablas de autenticación:', error);
-        throw error;
-    }
-};
 
 // RUTAS PÚBLICAS (sin autenticación)
 app.use('/api/auth', authRoutes);
@@ -373,7 +284,7 @@ const startServer = async () => {
         console.log('Base de datos inicializada correctamente');
         
         // Inicializar tablas de autenticación
-        await inicializarTablasAuth();
+        
         
         // Iniciar servidor
         app.listen(PORT, () => {

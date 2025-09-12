@@ -23,6 +23,7 @@ const gastosRoutes = require('./routes/gastos');
 const reportesRoutes = require('./routes/reportes');
 
 const app = express();
+app.use(cors());
 const PORT = process.env.PORT || 5000;
 
 const databaseMiddleware = require('./middleware/database');

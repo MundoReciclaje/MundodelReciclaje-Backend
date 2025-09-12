@@ -23,7 +23,7 @@ const gastosRoutes = require('./routes/gastos');
 const reportesRoutes = require('./routes/reportes');
 
 const app = express();
-app.use(cors());
+
 const PORT = process.env.PORT || 5000;
 
 const databaseMiddleware = require('./middleware/database');
@@ -44,8 +44,8 @@ app.use(helmet({
 // Middleware CORS
 app.use(cors({
     origin: process.env.NODE_ENV === 'production' 
-        ? ['https://tu-dominio.com'] 
-        : ['http://localhost:3000', 'http://127.0.0.1:3000'],
+        ? ['https://mundodel-reciclaje-deploy.vercel.app'] 
+    : ['http://localhost:3000', 'http://127.0.0.1:3000'],
     credentials: true
 }));
 
@@ -328,14 +328,6 @@ app.put('/api/usuarios/:id/toggle', verificarToken, verificarRol(['administrador
     }
 });
 
-// Servir archivos estáticos en producción
-if (process.env.NODE_ENV === 'production') {
-    app.use(express.static(path.join(__dirname, '../frontend/build')));
-    
-    app.get('*', (req, res) => {
-        res.sendFile(path.join(__dirname, '../frontend/build', 'index.html'));
-    });
-}
 
 // Middleware de manejo de errores
 app.use((err, req, res, next) => {

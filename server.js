@@ -46,7 +46,7 @@ app.use(cors({
     origin: 'https://mundodel-reciclaje-deploy.vercel.app',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
-    credentials: true
+    credentials: true  // ← Esta línea 55
 }));
 
     origin: process.env.NODE_ENV === 'production' 

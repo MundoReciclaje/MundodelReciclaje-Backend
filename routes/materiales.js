@@ -14,7 +14,7 @@ router.get('/', async (req, res) => {
 
         if (activo !== undefined) {
             conditions.push('activo = ?');
-            params.push(activo === 'true' ? 1 : 0);
+            params.push(activo === 'true' ? true : false);
         }
 
         if (categoria) {
@@ -155,7 +155,7 @@ router.put('/:id', async (req, res) => {
         if (precio_ordinario !== undefined) datosActualizacion.precio_ordinario = precio_ordinario;
         if (precio_camion !== undefined) datosActualizacion.precio_camion = precio_camion;
         if (precio_noche !== undefined) datosActualizacion.precio_noche = precio_noche;
-        if (activo !== undefined) datosActualizacion.activo = activo ? 1 : 0;
+        if (activo !== undefined) datosActualizacion.activo = activo ? true : false;
 
         // Actualizar material
         const campos = Object.keys(datosActualizacion);
@@ -212,7 +212,7 @@ router.delete('/:id', async (req, res) => {
         if (tieneCompras.count > 0 || tieneVentas.count > 0) {
             // Soft delete - solo desactivar
             await req.db.run(
-                'UPDATE materiales SET activo = 0, fecha_actualizacion = ? WHERE id = ?',
+                'UPDATE materiales SET activo = false, fecha_actualizacion = ? WHERE id = ?',
                 [new Date().toISOString(), req.params.id]
             );
 
@@ -244,7 +244,7 @@ router.get('/categorias/list', async (req, res) => {
         const categorias = await req.db.all(`
             SELECT DISTINCT categoria 
             FROM materiales 
-            WHERE activo = 1 
+            WHERE activo = true 
             ORDER BY categoria
         `);
 
@@ -296,7 +296,7 @@ router.put('/categoria/:categoria/precios', async (req, res) => {
             params.push(precio_noche_incremento);
         }
 
-        sql += ' WHERE categoria = ? AND activo = 1';
+        sql += ' WHERE categoria = ? AND activo = true';
         params.push(categoria);
 
         const resultado = await req.db.run(sql, params);
@@ -319,7 +319,7 @@ router.get('/buscar/:termino', async (req, res) => {
 
         const materiales = await req.db.all(`
             SELECT * FROM materiales 
-            WHERE activo = 1 
+            WHERE activo = true
             AND (
                 LOWER(nombre) LIKE LOWER(?) 
                 OR LOWER(categoria) LIKE LOWER(?)

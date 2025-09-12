@@ -1,71 +1,73 @@
-// MIDDLEWARE DE BASE DE DATOS
+// MIDDLEWARE DE BASE DE DATOS - PostgreSQL
 // Archivo: backend/middleware/database.js
-
 const Database = require('../config/database');
 
 // Middleware que agrega métodos de base de datos al objeto req
 const databaseMiddleware = async (req, res, next) => {
     try {
         // Obtener la instancia de la base de datos
-        let dbInstance = Database.getInstance();
+        const dbInstance = Database.getInstance();
         
-        // Si no existe, inicializar
-        if (!dbInstance) {
-            const db = await Database.initialize();
-            dbInstance = db.db; // Obtener la instancia SQLite3 interna
+        // Si no existe el pool, inicializar
+        if (!dbInstance.pool) {
+            await Database.initialize();
         }
-
-        // Agregar métodos simplificados al objeto req
+        
+        // Agregar métodos simplificados al objeto req (compatibles con las rutas existentes)
         req.db = {
             // Método para ejecutar queries SELECT que devuelven múltiples filas
-            all: (sql, params = []) => {
-                return new Promise((resolve, reject) => {
-                    dbInstance.all(sql, params, (err, rows) => {
-                        if (err) {
-                            console.error('❌ Error en db.all:', err);
-                            reject(err);
-                        } else {
-                            resolve(rows || []);
-                        }
-                    });
-                });
+            all: async (sql, params = []) => {
+                try {
+                    // Convertir parámetros de SQLite (?1, ?2) a PostgreSQL ($1, $2)
+                    const { query, parameters } = convertSQLiteToPostgreSQL(sql, params);
+                    const result = await dbInstance.ejecutarSQL(query, parameters);
+                    return result.rows || [];
+                } catch (error) {
+                    console.error('❌ Error en db.all:', error);
+                    throw error;
+                }
             },
 
             // Método para ejecutar queries SELECT que devuelven una sola fila
-            get: (sql, params = []) => {
-                return new Promise((resolve, reject) => {
-                    dbInstance.get(sql, params, (err, row) => {
-                        if (err) {
-                            console.error('❌ Error en db.get:', err);
-                            reject(err);
-                        } else {
-                            resolve(row || null);
-                        }
-                    });
-                });
+            get: async (sql, params = []) => {
+                try {
+                    // Convertir parámetros de SQLite (?1, ?2) a PostgreSQL ($1, $2)
+                    const { query, parameters } = convertSQLiteToPostgreSQL(sql, params);
+                    const result = await dbInstance.ejecutarSQL(query, parameters);
+                    return result.rows[0] || null;
+                } catch (error) {
+                    console.error('❌ Error en db.get:', error);
+                    throw error;
+                }
             },
 
             // Método para ejecutar queries INSERT, UPDATE, DELETE
-            run: (sql, params = []) => {
-                return new Promise((resolve, reject) => {
-                    dbInstance.run(sql, params, function(err) {
-                        if (err) {
-                            console.error('❌ Error en db.run:', err);
-                            reject(err);
-                        } else {
-                            resolve({ 
-                                lastID: this.lastID, 
-                                changes: this.changes 
-                            });
-                        }
-                    });
-                });
+            run: async (sql, params = []) => {
+                try {
+                    // Convertir parámetros de SQLite (?1, ?2) a PostgreSQL ($1, $2)
+                    const { query, parameters } = convertSQLiteToPostgreSQL(sql, params);
+                    const result = await dbInstance.ejecutarSQL(query, parameters);
+                    
+                    // Simular respuesta de SQLite para compatibilidad
+                    return {
+                        lastID: result.rows[0]?.id || null,
+                        changes: result.rowCount || 0
+                    };
+                } catch (error) {
+                    console.error('❌ Error en db.run:', error);
+                    throw error;
+                }
             },
 
             // Método directo para usar los helpers de la clase Database
             ejecutarSQL: async (sql, params = []) => {
-                const databaseInstance = await Database.initialize();
-                return databaseInstance.ejecutarSQL(sql, params);
+                try {
+                    const { query, parameters } = convertSQLiteToPostgreSQL(sql, params);
+                    return await dbInstance.ejecutarSQL(query, parameters);
+                } catch (error) {
+                    console.error('❌ Error en ejecutarSQL:', error);
+                    throw error;
+                }
             }
         };
 
@@ -74,9 +76,83 @@ const databaseMiddleware = async (req, res, next) => {
         console.error('❌ Error en middleware de base de datos:', error);
         res.status(500).json({ 
             error: 'Error de conexión a la base de datos',
-            details: error.message 
+            details: process.env.NODE_ENV === 'development' ? error.message : 'Error interno' 
         });
     }
 };
+
+// Función helper para convertir queries de SQLite a PostgreSQL
+function convertSQLiteToPostgreSQL(sql, params) {
+    let query = sql;
+    let parameters = params;
+
+    // Convertir placeholders de SQLite (?) a PostgreSQL ($1, $2, etc.)
+    if (params && params.length > 0) {
+        let paramIndex = 1;
+        query = sql.replace(/\?/g, () => `$${paramIndex++}`);
+    }
+
+    // Conversiones específicas de SQLite a PostgreSQL
+    query = query
+        // Convertir AUTOINCREMENT a SERIAL (aunque esto debería estar ya en las tablas)
+        .replace(/INTEGER PRIMARY KEY AUTOINCREMENT/gi, 'SERIAL PRIMARY KEY')
+        // Convertir DATETIME DEFAULT CURRENT_TIMESTAMP a TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        .replace(/DATETIME DEFAULT CURRENT_TIMESTAMP/gi, 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
+        // Convertir BOOLEAN DEFAULT 1/0 a BOOLEAN DEFAULT true/false
+        .replace(/BOOLEAN DEFAULT 1/gi, 'BOOLEAN DEFAULT true')
+        .replace(/BOOLEAN DEFAULT 0/gi, 'BOOLEAN DEFAULT false')
+        // Manejar las funciones de fecha
+        .replace(/\bdate\('now'\)/gi, 'CURRENT_DATE')
+        .replace(/\bdatetime\('now'\)/gi, 'CURRENT_TIMESTAMP')
+        // Manejar LIMIT y OFFSET (PostgreSQL los soporta igual)
+        // Manejar subconsultas y JOINs (la mayoría son compatibles)
+        ;
+
+    // Conversiones específicas para queries comunes del sistema
+    
+    // Para queries de conteo
+    if (query.includes('SELECT COUNT(*)')) {
+        // PostgreSQL devuelve count como string, hay que convertirlo
+        // Esto se maneja en el procesamiento de resultados
+    }
+
+    // Para queries con fechas
+    if (query.includes('fecha >=') || query.includes('fecha <=')) {
+        // PostgreSQL maneja fechas de forma similar a SQLite
+    }
+
+    // Para queries con COALESCE (compatible)
+    // Para queries con SUM, AVG, etc. (compatibles)
+
+    return { query, parameters };
+}
+
+// Función helper para convertir resultados de PostgreSQL a formato compatible con SQLite
+function convertPostgreSQLResults(pgResult) {
+    if (!pgResult) return null;
+    
+    // Para queries de conteo, convertir string a número
+    if (pgResult.rows && pgResult.rows.length > 0) {
+        return pgResult.rows.map(row => {
+            const convertedRow = { ...row };
+            
+            // Convertir counts de string a número
+            Object.keys(convertedRow).forEach(key => {
+                if (key.includes('count') && typeof convertedRow[key] === 'string') {
+                    convertedRow[key] = parseInt(convertedRow[key]) || 0;
+                }
+                
+                // Convertir decimales de string a número si es necesario
+                if (typeof convertedRow[key] === 'string' && /^\d+\.?\d*$/.test(convertedRow[key])) {
+                    convertedRow[key] = parseFloat(convertedRow[key]);
+                }
+            });
+            
+            return convertedRow;
+        });
+    }
+    
+    return pgResult.rows || [];
+}
 
 module.exports = databaseMiddleware;

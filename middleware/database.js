@@ -101,6 +101,11 @@ function convertSQLiteToPostgreSQL(sql, params) {
         // Convertir BOOLEAN DEFAULT 1/0 a BOOLEAN DEFAULT true/false
         .replace(/BOOLEAN DEFAULT 1/gi, 'BOOLEAN DEFAULT true')
         .replace(/BOOLEAN DEFAULT 0/gi, 'BOOLEAN DEFAULT false')
+        // Convertir comparaciones boolean hardcoded
+        .replace(/\bactivo\s*=\s*1\b/gi, 'activo = true')
+        .replace(/\bactivo\s*=\s*0\b/gi, 'activo = false')
+        .replace(/\bactivo\s*!=\s*1\b/gi, 'activo != true')
+        .replace(/\bactivo\s*!=\s*0\b/gi, 'activo != false')
         // Manejar las funciones de fecha
         .replace(/\bdate\('now'\)/gi, 'CURRENT_DATE')
         .replace(/\bdatetime\('now'\)/gi, 'CURRENT_TIMESTAMP')

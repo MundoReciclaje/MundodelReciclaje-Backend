@@ -49,11 +49,6 @@ app.use(cors({
     credentials: true  // ← Esta línea 55
 }));
 
-    origin: process.env.NODE_ENV === 'production' 
-        ? ['https://mundodel-reciclaje-deploy.vercel.app'] 
-    : ['http://localhost:3000', 'http://127.0.0.1:3000'],
-    credentials: true
-}));
 
 // Logging
 app.use(morgan('combined'));

@@ -21,7 +21,7 @@ const databaseMiddleware = async (req, res, next) => {
                     // Convertir parámetros de SQLite (?1, ?2) a PostgreSQL ($1, $2)
                     const { query, parameters } = convertSQLiteToPostgreSQL(sql, params);
                     const result = await dbInstance.ejecutarSQL(query, parameters);
-                    return result.rows || [];
+                    return convertPostgreSQLResults(result.rows || []);
                 } catch (error) {
                     console.error('❌ Error en db.all:', error);
                     throw error;
@@ -34,7 +34,8 @@ const databaseMiddleware = async (req, res, next) => {
                     // Convertir parámetros de SQLite (?1, ?2) a PostgreSQL ($1, $2)
                     const { query, parameters } = convertSQLiteToPostgreSQL(sql, params);
                     const result = await dbInstance.ejecutarSQL(query, parameters);
-                    return result.rows[0] || null;
+                    const rows = convertPostgreSQLResults(result.rows || []);
+                    return rows[0] || null;
                 } catch (error) {
                     console.error('❌ Error en db.get:', error);
                     throw error;
@@ -90,6 +91,13 @@ function convertSQLiteToPostgreSQL(sql, params) {
     if (params && params.length > 0) {
         let paramIndex = 1;
         query = sql.replace(/\?/g, () => `$${paramIndex++}`);
+        
+        // Convertir valores boolean (1/0 a true/false)
+        parameters = params.map(param => {
+            if (param === 1 && (query.includes('activo') || query.includes('boolean'))) return true;
+            if (param === 0 && (query.includes('activo') || query.includes('boolean'))) return false;
+            return param;
+        });
     }
 
     // Conversiones específicas de SQLite a PostgreSQL
@@ -117,55 +125,71 @@ function convertSQLiteToPostgreSQL(sql, params) {
         .replace(/strftime\s*\(\s*'%d'\s*,\s*([^)]+)\)/gi, "TO_CHAR($1, 'DD')")
         // Agregar alias a subconsultas sin alias
         .replace(/FROM\s*\(\s*SELECT[^)]+\)\s*(?!AS|[a-zA-Z_])/gi, (match) => match + ' AS subquery')
+        // Manejar operaciones matemáticas que pueden devolver null
+        .replace(/\bSUM\s*\(\s*([^)]+)\s*\)/gi, 'COALESCE(SUM($1), 0)')
+        .replace(/\bAVG\s*\(\s*([^)]+)\s*\)/gi, 'COALESCE(AVG($1), 0)')
+        .replace(/\bCOUNT\s*\(\s*([^)]+)\s*\)/gi, 'COALESCE(COUNT($1), 0)')
         // Manejar LIMIT y OFFSET (PostgreSQL los soporta igual)
         // Manejar subconsultas y JOINs (la mayoría son compatibles)
         ;
 
-    // Conversiones específicas para queries comunes del sistema
-    
-    // Para queries de conteo
-    if (query.includes('SELECT COUNT(*)')) {
-        // PostgreSQL devuelve count como string, hay que convertirlo
-        // Esto se maneja en el procesamiento de resultados
-    }
-
-    // Para queries con fechas
-    if (query.includes('fecha >=') || query.includes('fecha <=')) {
-        // PostgreSQL maneja fechas de forma similar a SQLite
-    }
-
-    // Para queries con COALESCE (compatible)
-    // Para queries con SUM, AVG, etc. (compatibles)
-
     return { query, parameters };
 }
 
-// Función helper para convertir resultados de PostgreSQL a formato compatible con SQLite
-function convertPostgreSQLResults(pgResult) {
-    if (!pgResult) return null;
+// Función helper para convertir resultados de PostgreSQL a formato compatible
+function convertPostgreSQLResults(rows) {
+    if (!rows || !Array.isArray(rows)) return rows;
     
-    // Para queries de conteo, convertir string a número
-    if (pgResult.rows && pgResult.rows.length > 0) {
-        return pgResult.rows.map(row => {
-            const convertedRow = { ...row };
+    return rows.map(row => {
+        const convertedRow = { ...row };
+        
+        // Convertir valores null problemáticos a 0 para evitar NaN
+        Object.keys(convertedRow).forEach(key => {
+            const value = convertedRow[key];
+            
+            // Convertir null a 0 para campos que deben ser numéricos
+            if (value === null && (
+                key.includes('total') || 
+                key.includes('promedio') || 
+                key.includes('precio') ||
+                key.includes('sum') || 
+                key.includes('avg') ||
+                key.includes('count') ||
+                key.includes('valor') ||
+                key.includes('kilos') ||
+                key.includes('pesos')
+            )) {
+                convertedRow[key] = 0;
+            }
             
             // Convertir counts de string a número
-            Object.keys(convertedRow).forEach(key => {
-                if (key.includes('count') && typeof convertedRow[key] === 'string') {
-                    convertedRow[key] = parseInt(convertedRow[key]) || 0;
-                }
-                
-                // Convertir decimales de string a número si es necesario
-                if (typeof convertedRow[key] === 'string' && /^\d+\.?\d*$/.test(convertedRow[key])) {
-                    convertedRow[key] = parseFloat(convertedRow[key]);
-                }
-            });
+            if (key.includes('count') && typeof value === 'string') {
+                convertedRow[key] = parseInt(value) || 0;
+            }
             
-            return convertedRow;
+            // Convertir campos numéricos de string a número
+            if (typeof value === 'string' && /^\d+\.?\d*$/.test(value)) {
+                convertedRow[key] = parseFloat(value);
+            }
+            
+            // Asegurar que los precios sean números válidos
+            if ((key.includes('precio') || key.includes('total') || key.includes('valor')) && 
+                (value === null || value === undefined || isNaN(value))) {
+                convertedRow[key] = 0;
+            }
+            
+            // Convertir boolean strings a boolean reales
+            if (key === 'activo') {
+                if (value === 'true' || value === 1 || value === '1') {
+                    convertedRow[key] = true;
+                } else if (value === 'false' || value === 0 || value === '0') {
+                    convertedRow[key] = false;
+                }
+            }
         });
-    }
-    
-    return pgResult.rows || [];
+        
+        return convertedRow;
+    });
 }
 
 module.exports = databaseMiddleware;

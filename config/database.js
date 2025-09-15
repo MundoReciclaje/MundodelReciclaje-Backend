@@ -1,395 +1,606 @@
+// RUTAS DE COMPRAS
+// Archivo: backend/routes/compras.js
 
-const { Pool } = require('pg');
+const express = require('express');
+const router = express.Router();
 
-class Database {
-    constructor() {
-        this.pool = null;
-    }
+// ================================
+// COMPRAS GENERALES (sin separar por material)
+// ================================
 
-    static getInstance() {
-        if (!Database.instance) {
-            Database.instance = new Database();
+// Obtener todas las compras generales
+router.get('/generales', async (req, res) => {
+    try {
+        const { fecha_inicio, fecha_fin, tipo_precio, cliente, limite = 100, pagina = 1 } = req.query;
+        
+        let sql = 'SELECT * FROM compras_generales';
+        let params = [];
+        let conditions = [];
+
+        if (fecha_inicio) {
+            conditions.push('fecha >= ?');
+            params.push(fecha_inicio);
         }
-        return Database.instance;
-    }
 
-    static async initialize() {
-        try {
-            if (!Database.instance) {
-                Database.instance = new Database();
+        if (fecha_fin) {
+            conditions.push('fecha <= ?');
+            params.push(fecha_fin);
+        }
+
+        if (tipo_precio) {
+            conditions.push('tipo_precio = ?');
+            params.push(tipo_precio);
+        }
+
+        if (cliente) {
+            conditions.push('cliente ILIKE ?');
+            params.push(`%${cliente}%`);
+        }
+
+        if (conditions.length > 0) {
+            sql += ' WHERE ' + conditions.join(' AND ');
+        }
+
+        sql += ' ORDER BY fecha DESC, fecha_creacion DESC';
+        
+        if (limite) {
+            const offset = (parseInt(pagina) - 1) * parseInt(limite);
+            sql += ` LIMIT ${limite} OFFSET ${offset}`;
+        }
+
+        const compras = await req.db.all(sql, params);
+
+        // Obtener total de registros para paginación
+        let countSql = 'SELECT COUNT(*) as total FROM compras_generales';
+        if (conditions.length > 0) {
+            countSql += ' WHERE ' + conditions.join(' AND ');
+        }
+        
+        const totalResult = await req.db.get(countSql, params);
+        const total = totalResult.total;
+
+        res.json({
+            compras,
+            paginacion: {
+                pagina: parseInt(pagina),
+                limite: parseInt(limite),
+                total,
+                totalPaginas: Math.ceil(total / parseInt(limite))
             }
-            await Database.instance.init();
-            return Database.instance;
-        } catch (error) {
-            console.error('❌ Error inicializando base de datos:', error);
-            throw error;
-        }
+        });
+    } catch (error) {
+        console.error('Error obteniendo compras generales:', error);
+        res.status(500).json({ error: 'Error obteniendo compras generales' });
     }
+});
 
-    static close() {
-        if (Database.instance && Database.instance.pool) {
-            Database.instance.pool.end(() => {
-                console.log('✅ Pool de conexiones cerrado correctamente');
+// Crear nueva compra general
+router.post('/generales', async (req, res) => {
+    try {
+        const { fecha, total_pesos, tipo_precio, cliente, observaciones } = req.body;
+
+        // Validar campos requeridos
+        if (!fecha || !total_pesos || !tipo_precio) {
+            return res.status(400).json({
+                error: 'Fecha, total en pesos y tipo de precio son requeridos'
             });
         }
-    }
 
-    async init() {
-        try {
-            this.pool = new Pool({
-                connectionString: process.env.DATABASE_URL,
-                ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
-                max: 20,
-                idleTimeoutMillis: 30000,
-                connectionTimeoutMillis: 2000,
+        // Validar tipo de precio
+        const tiposValidos = ['ordinario', 'camion', 'noche'];
+        if (!tiposValidos.includes(tipo_precio)) {
+            return res.status(400).json({
+                error: 'Tipo de precio debe ser: ordinario, camion o noche'
             });
-
-            // Probar conexión
-            const client = await this.pool.connect();
-            await client.query('SELECT NOW()');
-            client.release();
-            
-            console.log('✅ Conectado a PostgreSQL en Supabase');
-            
-            await this.crearTablas();
-        } catch (error) {
-            console.error('❌ Error conectando a PostgreSQL:', error);
-            throw error;
         }
+
+        // Validar que el total sea positivo
+        if (parseFloat(total_pesos) <= 0) {
+            return res.status(400).json({
+                error: 'El total debe ser mayor a cero'
+            });
+        }
+
+        // Validar cliente si se proporciona
+        if (cliente && cliente.trim().length > 100) {
+            return res.status(400).json({
+                error: 'El nombre del cliente no puede exceder 100 caracteres'
+            });
+        }
+
+        const resultado = await req.db.run(`
+            INSERT INTO compras_generales (fecha, total_pesos, tipo_precio, cliente, observaciones)
+            VALUES (?, ?, ?, ?, ?)
+        `, [fecha, total_pesos, tipo_precio, cliente || null, observaciones]);
+
+        const nuevaCompra = await req.db.get(
+            'SELECT * FROM compras_generales WHERE id = ?',
+            [resultado.lastID]
+        );
+
+        res.status(201).json(nuevaCompra);
+    } catch (error) {
+        console.error('Error creando compra general:', error);
+        res.status(500).json({ error: 'Error creando compra general' });
     }
+});
 
-    async crearTablas() {
-        try {
-            await this.crearEstructuraCompleta();
-            await this.insertarDatosIniciales();
-            console.log('✅ Tablas y datos iniciales creados/verificados correctamente');
-        } catch (error) {
-            console.error('❌ Error creando estructura de base de datos:', error);
-            throw error;
-        }
-    }
+// ================================
+// COMPRAS POR MATERIAL
+// ================================
 
-    async crearEstructuraCompleta() {
-        const queries = [
-            // Tabla materiales
-            `CREATE TABLE IF NOT EXISTS materiales (
-                id SERIAL PRIMARY KEY,
-                nombre VARCHAR(100) NOT NULL UNIQUE,
-                categoria VARCHAR(50) NOT NULL,
-                precio_ordinario DECIMAL(10,2) DEFAULT 0,
-                precio_camion DECIMAL(10,2) DEFAULT 0,
-                precio_noche DECIMAL(10,2) DEFAULT 0,
-                activo BOOLEAN DEFAULT true,
-                fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )`,
-            
-            // Tabla compras generales
-            `CREATE TABLE IF NOT EXISTS compras_generales (
-                id SERIAL PRIMARY KEY,
-                fecha DATE NOT NULL,
-                total_pesos DECIMAL(12,2) NOT NULL,
-                tipo_precio VARCHAR(20) NOT NULL,
-                observaciones TEXT,
-                fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )`,
-            
-            // Tabla compras materiales
-            `CREATE TABLE IF NOT EXISTS compras_materiales (
-                id SERIAL PRIMARY KEY,
-                material_id INTEGER NOT NULL,
-                fecha DATE NOT NULL,
-                kilos DECIMAL(10,3) NOT NULL,
-                precio_kilo DECIMAL(10,2) NOT NULL,
-                total_pesos DECIMAL(12,2) NOT NULL,
-                tipo_precio VARCHAR(20) NOT NULL,
-                observaciones TEXT,
-                fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (material_id) REFERENCES materiales(id)
-            )`,
-            
-            // Tabla ventas
-            `CREATE TABLE IF NOT EXISTS ventas (
-                id SERIAL PRIMARY KEY,
-                material_id INTEGER NOT NULL,
-                fecha DATE NOT NULL,
-                kilos DECIMAL(10,3) NOT NULL,
-                precio_kilo DECIMAL(10,2) NOT NULL,
-                total_pesos DECIMAL(12,2) NOT NULL,
-                cliente VARCHAR(100),
-                observaciones TEXT,
-                fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (material_id) REFERENCES materiales(id)
-            )`,
-            
-            // Tabla categorías de gastos
-            `CREATE TABLE IF NOT EXISTS categorias_gastos (
-                id SERIAL PRIMARY KEY,
-                nombre VARCHAR(50) NOT NULL UNIQUE,
-                descripcion TEXT,
-                activo BOOLEAN DEFAULT true
-            )`,
-            
-            // Tabla gastos
-            `CREATE TABLE IF NOT EXISTS gastos (
-                id SERIAL PRIMARY KEY,
-                categoria_id INTEGER NOT NULL,
-                fecha DATE NOT NULL,
-                concepto VARCHAR(200) NOT NULL,
-                valor DECIMAL(12,2) NOT NULL,
-                observaciones TEXT,
-                fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (categoria_id) REFERENCES categorias_gastos(id)
-            )`,
-
-            // Tabla usuarios (para autenticación)
-            `CREATE TABLE IF NOT EXISTS usuarios (
-                id SERIAL PRIMARY KEY,
-                nombre VARCHAR(100) NOT NULL,
-                email VARCHAR(255) UNIQUE NOT NULL,
-                password_hash VARCHAR(255) NOT NULL,
-                rol VARCHAR(50) DEFAULT 'usuario',
-                activo BOOLEAN DEFAULT true,
-                fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                ultimo_acceso TIMESTAMP,
-                intentos_fallidos INTEGER DEFAULT 0,
-                bloqueado_hasta TIMESTAMP NULL
-            )`
-        ];
-
-        // Crear índices
-        const indices = [
-            'CREATE INDEX IF NOT EXISTS idx_usuarios_email ON usuarios(email)',
-            'CREATE INDEX IF NOT EXISTS idx_usuarios_activo ON usuarios(activo)',
-            'CREATE INDEX IF NOT EXISTS idx_materiales_categoria ON materiales(categoria)',
-            'CREATE INDEX IF NOT EXISTS idx_compras_fecha ON compras_generales(fecha)',
-            'CREATE INDEX IF NOT EXISTS idx_ventas_fecha ON ventas(fecha)',
-            'CREATE INDEX IF NOT EXISTS idx_gastos_fecha ON gastos(fecha)'
-        ];
-
-        // Ejecutar creación de tablas
-        for (const query of queries) {
-            await this.ejecutarSQL(query);
-        }
-
-        // Ejecutar creación de índices
-        for (const indice of indices) {
-            await this.ejecutarSQL(indice);
-        }
-    }
-
-    async insertarDatosIniciales() {
-        // Verificar si ya hay categorías de gastos
-        const categoriasExistentes = await this.ejecutarSQL('SELECT COUNT(*) as count FROM categorias_gastos');
+// Obtener todas las compras por material
+router.get('/materiales', async (req, res) => {
+    try {
+        const { 
+            fecha_inicio, 
+            fecha_fin, 
+            material_id, 
+            tipo_precio,
+            cliente, 
+            limite = 100, 
+            pagina = 1 
+        } = req.query;
         
-        if (parseInt(categoriasExistentes.rows[0].count) === 0) {
-            const categorias = [
-                ['Sueldos', 'Pagos de salarios y prestaciones'],
-                ['Gas Camión', 'Combustible para vehículos'],
-                ['Alimentación', 'Gastos de comida y bebidas'],
-                ['Otros', 'Gastos varios y misceláneos'],
-                ['Mantenimiento', 'Reparaciones y mantenimiento'],
-                ['Servicios', 'Agua, luz, internet, etc.']
-            ];
+        let sql = `
+            SELECT 
+                cm.*,
+                m.nombre as material_nombre,
+                m.categoria as material_categoria
+            FROM compras_materiales cm
+            JOIN materiales m ON cm.material_id = m.id
+        `;
+        let params = [];
+        let conditions = [];
 
-            for (const [nombre, descripcion] of categorias) {
-                await this.ejecutarSQL(
-                    'INSERT INTO categorias_gastos (nombre, descripcion) VALUES ($1, $2)',
-                    [nombre, descripcion]
-                );
+        if (fecha_inicio) {
+            conditions.push('cm.fecha >= ?');
+            params.push(fecha_inicio);
+        }
+
+        if (fecha_fin) {
+            conditions.push('cm.fecha <= ?');
+            params.push(fecha_fin);
+        }
+
+        if (material_id) {
+            conditions.push('cm.material_id = ?');
+            params.push(material_id);
+        }
+
+        if (tipo_precio) {
+            conditions.push('cm.tipo_precio = ?');
+            params.push(tipo_precio);
+        }
+
+        if (cliente) {
+            conditions.push('cm.cliente ILIKE ?');
+            params.push(`%${cliente}%`);
+        }
+
+        if (conditions.length > 0) {
+            sql += ' WHERE ' + conditions.join(' AND ');
+        }
+
+        sql += ' ORDER BY cm.fecha DESC, cm.fecha_creacion DESC';
+        
+        if (limite) {
+            const offset = (parseInt(pagina) - 1) * parseInt(limite);
+            sql += ` LIMIT ${limite} OFFSET ${offset}`;
+        }
+
+        const compras = await req.db.all(sql, params);
+
+        // Obtener total de registros
+        let countSql = `
+            SELECT COUNT(*) as total 
+            FROM compras_materiales cm
+            JOIN materiales m ON cm.material_id = m.id
+        `;
+        if (conditions.length > 0) {
+            countSql += ' WHERE ' + conditions.join(' AND ');
+        }
+        
+        const totalResult = await req.db.get(countSql, params);
+        const total = totalResult.total;
+
+        res.json({
+            compras,
+            paginacion: {
+                pagina: parseInt(pagina),
+                limite: parseInt(limite),
+                total,
+                totalPaginas: Math.ceil(total / parseInt(limite))
             }
-            console.log('✅ Categorías de gastos iniciales creadas');
+        });
+    } catch (error) {
+        console.error('Error obteniendo compras por material:', error);
+        res.status(500).json({ error: 'Error obteniendo compras por material' });
+    }
+});
+
+// Crear nueva compra por material
+router.post('/materiales', async (req, res) => {
+    try {
+        const { 
+            material_id, 
+            fecha, 
+            kilos, 
+            precio_kilo, 
+            tipo_precio,
+            cliente, 
+            observaciones 
+        } = req.body;
+
+        // Validar campos requeridos
+        if (!material_id || !fecha || !kilos || !precio_kilo || !tipo_precio) {
+            return res.status(400).json({
+                error: 'Material, fecha, kilos, precio por kilo y tipo de precio son requeridos'
+            });
         }
 
-        // Verificar si ya hay materiales
-        const materialesExistentes = await this.ejecutarSQL('SELECT COUNT(*) as count FROM materiales');
-        
-        if (parseInt(materialesExistentes.rows[0].count) === 0) {
-            const materiales = [
-                // METALES
-                ['Chatarra', 'Metales', 0, 0, 0],
-                ['Cobre #1', 'Metales-Cobre', 0, 0, 0],
-                ['Cobre #2', 'Metales-Cobre', 0, 0, 0],
-                ['Radiador de Cobre', 'Metales-Cobre', 0, 0, 0],
-                ['Bronce Limpio', 'Metales-Bronce', 0, 0, 0],
-                ['Bronce Pintado', 'Metales-Bronce', 0, 0, 0],
-                ['Acero Grueso Limpio', 'Metales-Acero', 0, 0, 0],
-                ['Grueso Sucio', 'Metales-Acero', 0, 0, 0],
-                ['Olla Limpia', 'Metales-Ollas', 0, 0, 0],
-                ['Olla Sucia', 'Metales-Ollas', 0, 0, 0],
-                ['Perfil Limpio', 'Metales-Perfiles', 0, 0, 0],
-                ['Perfil Sucio', 'Metales-Perfiles', 0, 0, 0],
-                ['Guaya', 'Metales-Varios', 0, 0, 0],
-                ['Antimonio', 'Metales-Varios', 0, 0, 0],
-                ['Radiador Aluminio', 'Metales-Aluminio', 0, 0, 0],
-                ['Plancha', 'Metales-Aluminio', 0, 0, 0],
-                ['Rin Carro', 'Metales-Aluminio', 0, 0, 0],
-                ['Rin Cicla', 'Metales-Aluminio', 0, 0, 0],
-                ['Aerosol Limpio', 'Metales-Aluminio', 0, 0, 0],
+        // Validar que el material existe
+        const material = await req.db.get(
+            'SELECT * FROM materiales WHERE id = ? AND activo = true',
+            [material_id]
+        );
 
-                // PAPELES Y CARTONES
-                ['Cartón', 'Papeles', 0, 0, 0],
-                ['Archivo', 'Papeles', 0, 0, 0],
+        if (!material) {
+            return res.status(404).json({
+                error: 'Material no encontrado o inactivo'
+            });
+        }
 
-                // PLÁSTICOS
-                ['PET', 'Plásticos', 0, 0, 0],
-                ['Ambar', 'Plásticos', 0, 0, 0],
-                ['Tapas', 'Plásticos', 0, 0, 0],
-                ['Canecas', 'Plásticos', 0, 0, 0],
-                ['Vasija Verde', 'Plásticos', 0, 0, 0],
-                ['Soplado', 'Plásticos', 0, 0, 0],
-                ['Aceite', 'Plásticos', 0, 0, 0],
-                ['PVC Tubo', 'Plásticos', 0, 0, 0],
-                ['PVC Techo', 'Plásticos', 0, 0, 0],
-                ['PVC Blando', 'Plásticos', 0, 0, 0],
-                ['Plástico', 'Plásticos', 0, 0, 0],
-                ['Acrílico', 'Plásticos', 0, 0, 0],
+        // Validar tipo de precio
+        const tiposValidos = ['ordinario', 'camion', 'noche'];
+        if (!tiposValidos.includes(tipo_precio)) {
+            return res.status(400).json({
+                error: 'Tipo de precio debe ser: ordinario, camion o noche'
+            });
+        }
 
-                // VIDRIOS
-                ['Vidrio', 'Vidrios', 0, 0, 0],
-                ['Clausen', 'Vidrios', 0, 0, 0],
+        // Validar que kilos y precio sean positivos
+        if (parseFloat(kilos) <= 0 || parseFloat(precio_kilo) <= 0) {
+            return res.status(400).json({
+                error: 'Los kilos y precio por kilo deben ser mayores a cero'
+            });
+        }
 
-                // BATERÍAS
-                ['Baterias Taxi 22', 'Baterías', 0, 0, 0],
-                ['Baterias 24', 'Baterías', 0, 0, 0],
-                ['Baterias 27', 'Baterías', 0, 0, 0],
-                ['Bateria 30H', 'Baterías', 0, 0, 0],
-                ['Baterias 4D', 'Baterías', 0, 0, 0],
-                ['Baterias 8D', 'Baterías', 0, 0, 0],
-                ['Moto Plomo', 'Baterías', 0, 0, 0],
-                ['Balancines', 'Baterías', 0, 0, 0],
-                ['Baterias Polimero (no inflada)', 'Baterías-Electrónicos', 0, 0, 0],
-                ['Baterias Celular (no inflada)', 'Baterías-Electrónicos', 0, 0, 0],
-                ['Bateria Portatil (no inflada)', 'Baterías-Electrónicos', 0, 0, 0],
+        // Validar cliente si se proporciona
+        if (cliente && cliente.trim().length > 100) {
+            return res.status(400).json({
+                error: 'El nombre del cliente no puede exceder 100 caracteres'
+            });
+        }
 
-                // ELECTRÓNICOS
-                ['CD', 'Electrónicos', 0, 0, 0],
-                ['Disco Duro', 'Electrónicos', 0, 0, 0],
-                ['Tarjeta Bajo Marrón', 'Electrónicos-Tarjetas', 0, 0, 0],
-                ['Tarjeta Bajo Verde', 'Electrónicos-Tarjetas', 0, 0, 0],
-                ['Tarjeta Decodificador', 'Electrónicos-Tarjetas', 0, 0, 0],
-                ['Tarjeta Modem', 'Electrónicos-Tarjetas', 0, 0, 0],
-                ['Tarjeta Tipo #1', 'Electrónicos-Tarjetas', 0, 0, 0],
-                ['Tarjeta Pentium', 'Electrónicos-Tarjetas', 0, 0, 0],
-                ['Tarjeta Tablet', 'Electrónicos-Tarjetas', 0, 0, 0],
-                ['Tarjeta Celular', 'Electrónicos-Tarjetas', 0, 0, 0],
-                ['Celular Smart', 'Electrónicos-Dispositivos', 0, 0, 0],
-                ['Celular Teclas', 'Electrónicos-Dispositivos', 0, 0, 0],
-                ['Tablet', 'Electrónicos-Dispositivos', 0, 0, 0],
-                ['RAM Dorada', 'Electrónicos-Componentes', 0, 0, 0],
-                ['Procesador UND', 'Electrónicos-Componentes', 0, 0, 0]
-            ];
+        // Calcular total
+        const total_pesos = parseFloat(kilos) * parseFloat(precio_kilo);
 
-            for (const [nombre, categoria, precio_ordinario, precio_camion, precio_noche] of materiales) {
-                await this.ejecutarSQL(
-                    'INSERT INTO materiales (nombre, categoria, precio_ordinario, precio_camion, precio_noche) VALUES ($1, $2, $3, $4, $5)',
-                    [nombre, categoria, precio_ordinario, precio_camion, precio_noche]
-                );
+        const resultado = await req.db.run(`
+            INSERT INTO compras_materiales (
+                material_id, fecha, kilos, precio_kilo, total_pesos, tipo_precio, cliente, observaciones
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `, [material_id, fecha, kilos, precio_kilo, total_pesos, tipo_precio, cliente || null, observaciones]);
+
+        // Obtener la compra recién creada con información del material
+        const nuevaCompra = await req.db.get(`
+            SELECT 
+                cm.*,
+                m.nombre as material_nombre,
+                m.categoria as material_categoria
+            FROM compras_materiales cm
+            JOIN materiales m ON cm.material_id = m.id
+            WHERE cm.id = ?
+        `, [resultado.lastID]);
+
+        res.status(201).json(nuevaCompra);
+    } catch (error) {
+        console.error('Error creando compra por material:', error);
+        res.status(500).json({ error: 'Error creando compra por material' });
+    }
+});
+
+// ================================
+// ENDPOINTS COMUNES
+// ================================
+
+// Obtener una compra por ID (general o material)
+router.get('/:tipo/:id', async (req, res) => {
+    try {
+        const { tipo, id } = req.params;
+        let compra;
+
+        if (tipo === 'general') {
+            compra = await req.db.get(
+                'SELECT * FROM compras_generales WHERE id = ?',
+                [id]
+            );
+        } else if (tipo === 'material') {
+            compra = await req.db.get(`
+                SELECT 
+                    cm.*,
+                    m.nombre as material_nombre,
+                    m.categoria as material_categoria
+                FROM compras_materiales cm
+                JOIN materiales m ON cm.material_id = m.id
+                WHERE cm.id = ?
+            `, [id]);
+        } else {
+            return res.status(400).json({ error: 'Tipo debe ser "general" o "material"' });
+        }
+
+        if (!compra) {
+            return res.status(404).json({ error: 'Compra no encontrada' });
+        }
+
+        res.json(compra);
+    } catch (error) {
+        console.error('Error obteniendo compra:', error);
+        res.status(500).json({ error: 'Error obteniendo compra' });
+    }
+});
+
+// Actualizar compra
+router.put('/:tipo/:id', async (req, res) => {
+    try {
+        const { tipo, id } = req.params;
+        const datosActualizacion = { ...req.body };
+
+        // Validar cliente si se está actualizando
+        if (datosActualizacion.cliente && datosActualizacion.cliente.trim().length > 100) {
+            return res.status(400).json({
+                error: 'El nombre del cliente no puede exceder 100 caracteres'
+            });
+        }
+
+        if (tipo === 'general') {
+            // Validar campos específicos para compra general
+            const { fecha, total_pesos, tipo_precio } = datosActualizacion;
+            
+            if (total_pesos !== undefined && parseFloat(total_pesos) <= 0) {
+                return res.status(400).json({
+                    error: 'El total debe ser mayor a cero'
+                });
             }
-            console.log('✅ Materiales iniciales creados (61 materiales)');
+
+            if (tipo_precio && !['ordinario', 'camion', 'noche'].includes(tipo_precio)) {
+                return res.status(400).json({
+                    error: 'Tipo de precio debe ser: ordinario, camion o noche'
+                });
+            }
+
+            // Preparar datos de actualización
+            const campos = Object.keys(datosActualizacion);
+            const setClause = campos.map(campo => `${campo} = ?`).join(', ');
+            const valores = [...Object.values(datosActualizacion), id];
+
+            await req.db.run(
+                `UPDATE compras_generales SET ${setClause} WHERE id = ?`,
+                valores
+            );
+
+            const compraActualizada = await req.db.get(
+                'SELECT * FROM compras_generales WHERE id = ?',
+                [id]
+            );
+
+            res.json(compraActualizada);
+
+        } else if (tipo === 'material') {
+            // Validar material si se está cambiando
+            if (datosActualizacion.material_id) {
+                const material = await req.db.get(
+                    'SELECT * FROM materiales WHERE id = ? AND activo = true',
+                    [datosActualizacion.material_id]
+                );
+
+                if (!material) {
+                    return res.status(404).json({
+                        error: 'Material no encontrado o inactivo'
+                    });
+                }
+            }
+
+            // Recalcular total si cambian kilos o precio
+            if (datosActualizacion.kilos || datosActualizacion.precio_kilo) {
+                const compraActual = await req.db.get(
+                    'SELECT kilos, precio_kilo FROM compras_materiales WHERE id = ?',
+                    [id]
+                );
+
+                const nuevosKilos = datosActualizacion.kilos || compraActual.kilos;
+                const nuevoPrecio = datosActualizacion.precio_kilo || compraActual.precio_kilo;
+                datosActualizacion.total_pesos = parseFloat(nuevosKilos) * parseFloat(nuevoPrecio);
+            }
+
+            // Actualizar
+            const campos = Object.keys(datosActualizacion);
+            const setClause = campos.map(campo => `${campo} = ?`).join(', ');
+            const valores = [...Object.values(datosActualizacion), id];
+
+            await req.db.run(
+                `UPDATE compras_materiales SET ${setClause} WHERE id = ?`,
+                valores
+            );
+
+            const compraActualizada = await req.db.get(`
+                SELECT 
+                    cm.*,
+                    m.nombre as material_nombre,
+                    m.categoria as material_categoria
+                FROM compras_materiales cm
+                JOIN materiales m ON cm.material_id = m.id
+                WHERE cm.id = ?
+            `, [id]);
+
+            res.json(compraActualizada);
+
+        } else {
+            return res.status(400).json({ error: 'Tipo debe ser "general" o "material"' });
+        }
+    } catch (error) {
+        console.error('Error actualizando compra:', error);
+        res.status(500).json({ error: 'Error actualizando compra' });
+    }
+});
+
+// Eliminar compra
+router.delete('/:tipo/:id', async (req, res) => {
+    try {
+        const { tipo, id } = req.params;
+        let resultado;
+
+        if (tipo === 'general') {
+            resultado = await req.db.run(
+                'DELETE FROM compras_generales WHERE id = ?',
+                [id]
+            );
+        } else if (tipo === 'material') {
+            resultado = await req.db.run(
+                'DELETE FROM compras_materiales WHERE id = ?',
+                [id]
+            );
+        } else {
+            return res.status(400).json({ error: 'Tipo debe ser "general" o "material"' });
         }
 
-        // Crear usuario administrador por defecto
-        const usuariosExistentes = await this.ejecutarSQL('SELECT COUNT(*) as count FROM usuarios WHERE email = $1', ['admin@reciclaje.com']);
-        
-        if (parseInt(usuariosExistentes.rows[0].count) === 0) {
-            const bcrypt = require('bcryptjs');
-            const passwordHash = await bcrypt.hash('admin123', 12);
-            
-            await this.ejecutarSQL(`
-                INSERT INTO usuarios (nombre, email, password_hash, rol, activo) 
-                VALUES ($1, $2, $3, $4, $5)
-            `, ['Administrador', 'admin@reciclaje.com', passwordHash, 'administrador', true]);
-            
-            console.log('✅ Usuario administrador creado: admin@reciclaje.com / admin123');
+        if (resultado.changes === 0) {
+            return res.status(404).json({ error: 'Compra no encontrada' });
         }
-    }
 
-    async ejecutarSQL(sql, params = []) {
-        const client = await this.pool.connect();
-        try {
-            const result = await client.query(sql, params);
-            return result;
-        } finally {
-            client.release();
+        res.json({ message: 'Compra eliminada correctamente' });
+    } catch (error) {
+        console.error('Error eliminando compra:', error);
+        res.status(500).json({ error: 'Error eliminando compra' });
+    }
+});
+
+// Obtener lista de clientes únicos para autocompletado
+router.get('/clientes/lista', async (req, res) => {
+    try {
+        const { buscar } = req.query;
+        
+        let clientesGenerales = `
+            SELECT DISTINCT cliente 
+            FROM compras_generales 
+            WHERE cliente IS NOT NULL AND cliente != ''
+        `;
+        
+        let clientesMateriales = `
+            SELECT DISTINCT cliente 
+            FROM compras_materiales 
+            WHERE cliente IS NOT NULL AND cliente != ''
+        `;
+        
+        let params = [];
+        
+        if (buscar) {
+            clientesGenerales += ' AND cliente ILIKE ?';
+            clientesMateriales += ' AND cliente ILIKE ?';
+            params = [`%${buscar}%`, `%${buscar}%`];
         }
-    }
-
-    // Métodos helper para operaciones comunes (adaptados para PostgreSQL)
-    async obtenerTodos(tabla, condiciones = '', params = []) {
-        const sql = `SELECT * FROM ${tabla} ${condiciones}`;
-        const result = await this.ejecutarSQL(sql, params);
-        return result.rows;
-    }
-
-    async obtenerPorId(tabla, id) {
-        const sql = `SELECT * FROM ${tabla} WHERE id = $1`;
-        const result = await this.ejecutarSQL(sql, [id]);
-        return result.rows[0] || null;
-    }
-
-    async insertar(tabla, datos) {
-        const columnas = Object.keys(datos);
-        const placeholders = columnas.map((_, index) => `$${index + 1}`).join(', ');
-        const valores = Object.values(datos);
         
-        const sql = `INSERT INTO ${tabla} (${columnas.join(', ')}) VALUES (${placeholders}) RETURNING *`;
-        const result = await this.ejecutarSQL(sql, valores);
-        return result.rows[0];
-    }
-
-    async actualizar(tabla, id, datos) {
-        const columnas = Object.keys(datos);
-        const setClause = columnas.map((col, index) => `${col} = $${index + 1}`).join(', ');
-        const valores = [...Object.values(datos), id];
+        const sql = `
+            ${clientesGenerales}
+            UNION
+            ${clientesMateriales}
+            ORDER BY cliente
+            LIMIT 20
+        `;
         
-        const sql = `UPDATE ${tabla} SET ${setClause} WHERE id = $${valores.length} RETURNING *`;
-        const result = await this.ejecutarSQL(sql, valores);
-        return result.rows[0];
+        const clientes = await req.db.all(sql, params);
+        
+        res.json(clientes.map(c => c.cliente));
+    } catch (error) {
+        console.error('Error obteniendo lista de clientes:', error);
+        res.status(500).json({ error: 'Error obteniendo lista de clientes' });
     }
+});
 
-    async eliminar(tabla, id) {
-        const sql = `DELETE FROM ${tabla} WHERE id = $1 RETURNING *`;
-        const result = await this.ejecutarSQL(sql, [id]);
-        return result.rows[0];
+// Estadísticas de compras
+router.get('/estadisticas/resumen', async (req, res) => {
+    try {
+        const { fecha_inicio, fecha_fin } = req.query;
+        
+        let whereClause = '';
+        let params = [];
+
+        if (fecha_inicio && fecha_fin) {
+            whereClause = 'WHERE fecha BETWEEN ? AND ?';
+            params = [fecha_inicio, fecha_fin];
+        }
+
+        // Estadísticas de compras generales
+        const statsGenerales = await req.db.get(`
+            SELECT 
+                COUNT(*) as total_transacciones,
+                COALESCE(SUM(total_pesos), 0) as total_pesos,
+                COALESCE(AVG(total_pesos), 0) as promedio_compra,
+                COUNT(CASE WHEN tipo_precio = 'ordinario' THEN 1 END) as compras_ordinario,
+                COUNT(CASE WHEN tipo_precio = 'camion' THEN 1 END) as compras_camion,
+                COUNT(CASE WHEN tipo_precio = 'noche' THEN 1 END) as compras_noche,
+                COUNT(DISTINCT cliente) as total_clientes
+            FROM compras_generales
+            ${whereClause}
+        `, params);
+
+        // Estadísticas de compras por material
+        const statsMateriales = await req.db.get(`
+            SELECT 
+                COUNT(*) as total_transacciones,
+                COALESCE(SUM(total_pesos), 0) as total_pesos,
+                COALESCE(SUM(kilos), 0) as total_kilos,
+                COALESCE(AVG(total_pesos), 0) as promedio_compra,
+                COALESCE(AVG(precio_kilo), 0) as precio_promedio_kilo,
+                COUNT(DISTINCT cliente) as total_clientes
+            FROM compras_materiales
+            ${whereClause}
+        `, params);
+
+        // Top materiales por volumen
+        const topMateriales = await req.db.all(`
+            SELECT 
+                m.nombre,
+                m.categoria,
+                SUM(cm.kilos) as total_kilos,
+                SUM(cm.total_pesos) as total_pesos,
+                AVG(cm.precio_kilo) as precio_promedio
+            FROM compras_materiales cm
+            JOIN materiales m ON cm.material_id = m.id
+            ${whereClause}
+            GROUP BY m.id, m.nombre, m.categoria
+            ORDER BY total_kilos DESC
+            LIMIT 10
+        `, params);
+
+        // Top clientes por volumen de compras
+        const topClientes = await req.db.all(`
+            SELECT 
+                cliente,
+                SUM(total_pesos) as total_comprado,
+                COUNT(*) as total_transacciones
+            FROM (
+                SELECT cliente, total_pesos FROM compras_generales ${whereClause}
+                UNION ALL
+                SELECT cliente, total_pesos FROM compras_materiales ${whereClause}
+            ) compras_unificadas
+            WHERE cliente IS NOT NULL AND cliente != ''
+            GROUP BY cliente
+            ORDER BY total_comprado DESC
+            LIMIT 10
+        `, [...params, ...params]);
+
+        res.json({
+            compras_generales: statsGenerales,
+            compras_materiales: statsMateriales,
+            top_materiales: topMateriales,
+            top_clientes: topClientes,
+            total_compras: (statsGenerales.total_pesos || 0) + (statsMateriales.total_pesos || 0)
+        });
+    } catch (error) {
+        console.error('Error obteniendo estadísticas de compras:', error);
+        res.status(500).json({ error: 'Error obteniendo estadísticas de compras' });
     }
+});
 
-    // Método para obtener estadísticas (compatible con PostgreSQL)
-    async obtenerEstadisticas(fechaInicio) {
-        const queries = {
-            totalCompras: `
-                SELECT COALESCE(SUM(total_pesos), 0) as total 
-                FROM (
-                    SELECT total_pesos FROM compras_generales WHERE fecha >= $1
-                    UNION ALL
-                    SELECT total_pesos FROM compras_materiales WHERE fecha >= $1
-                ) compras
-            `,
-            totalVentas: `
-                SELECT COALESCE(SUM(total_pesos), 0) as total 
-                FROM ventas 
-                WHERE fecha >= $1
-            `,
-            totalGastos: `
-                SELECT COALESCE(SUM(valor), 0) as total 
-                FROM gastos 
-                WHERE fecha >= $1
-            `
-        };
-
-        const [compras, ventas, gastos] = await Promise.all([
-            this.ejecutarSQL(queries.totalCompras, [fechaInicio]),
-            this.ejecutarSQL(queries.totalVentas, [fechaInicio]),
-            this.ejecutarSQL(queries.totalGastos, [fechaInicio])
-        ]);
-
-        return {
-            totalCompras: parseFloat(compras.rows[0].total || 0),
-            totalVentas: parseFloat(ventas.rows[0].total || 0),
-            totalGastos: parseFloat(gastos.rows[0].total || 0)
-        };
-    }
-}
-
-module.exports = Database;
+module.exports = router;

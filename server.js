@@ -41,14 +41,16 @@ app.use(helmet({
     },
 }));
 
-// Middleware CORS
+// Middleware CORS MEJORADO
 app.use(cors({
-    origin: 'https://mundodel-reciclaje-deploy.vercel.app',
+    origin: [
+        'http://localhost:3000',  // ← AGREGADO para desarrollo
+        'https://mundodel-reciclaje-deploy.vercel.app'
+    ],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
-    credentials: true  // ← Esta línea 55
+    credentials: true
 }));
-
 
 // Logging
 app.use(morgan('combined'));
@@ -59,8 +61,6 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Middleware de base de datos (después del parsing JSON)
 app.use(databaseMiddleware);
-
-// Función para crear tabla de usuarios si no existe (usando tu configuración existente)
 
 // RUTAS PÚBLICAS (sin autenticación)
 app.use('/api/auth', authRoutes);
@@ -77,24 +77,43 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// Debug de tablas (pública para desarrollo)
+// Debug de tablas CORREGIDO para PostgreSQL
 app.get('/api/debug/tables', async (req, res) => {
     try {
         const tables = await req.db.all(`
-            SELECT name FROM sqlite_master 
-            WHERE type='table' 
-            ORDER BY name
+            SELECT table_name as name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'public'
+            ORDER BY table_name
         `);
+        
+        // Obtener estructura de cada tabla
+        const tablesWithColumns = {};
+        for (const table of tables) {
+            try {
+                const columns = await req.db.all(`
+                    SELECT column_name, data_type, is_nullable 
+                    FROM information_schema.columns 
+                    WHERE table_name = $1 AND table_schema = 'public'
+                    ORDER BY ordinal_position
+                `, [table.name]);
+                
+                tablesWithColumns[table.name] = columns;
+            } catch (error) {
+                tablesWithColumns[table.name] = { error: error.message };
+            }
+        }
         
         res.json({
             tables_found: tables.map(t => t.name),
             total_tables: tables.length,
-            database_path: require('path').join(__dirname, 'database/reciclaje.db')
+            database_type: 'PostgreSQL',
+            tables_structure: tablesWithColumns
         });
     } catch (error) {
         res.status(500).json({ 
             error: error.message,
-            database_path: require('path').join(__dirname, 'database/reciclaje.db')
+            database_type: 'PostgreSQL'
         });
     }
 });
@@ -104,6 +123,34 @@ app.get('/api/debug/usuarios', async (req, res) => {
     try {
         const usuarios = await req.db.all('SELECT id, nombre, email, rol, activo, fecha_creacion FROM usuarios');
         res.json(usuarios);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// NUEVO: Debug para verificar columnas de compras
+app.get('/api/debug/compras-estructura', async (req, res) => {
+    try {
+        const columnasGenerales = await req.db.all(`
+            SELECT column_name, data_type, is_nullable 
+            FROM information_schema.columns 
+            WHERE table_name = 'compras_generales' AND table_schema = 'public'
+            ORDER BY ordinal_position
+        `);
+        
+        const columnasMateriales = await req.db.all(`
+            SELECT column_name, data_type, is_nullable 
+            FROM information_schema.columns 
+            WHERE table_name = 'compras_materiales' AND table_schema = 'public'
+            ORDER BY ordinal_position
+        `);
+        
+        res.json({
+            compras_generales: columnasGenerales,
+            compras_materiales: columnasMateriales,
+            tiene_cliente_generales: columnasGenerales.some(col => col.column_name === 'cliente'),
+            tiene_cliente_materiales: columnasMateriales.some(col => col.column_name === 'cliente')
+        });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -128,28 +175,28 @@ app.get('/api/dashboard', verificarToken, async (req, res) => {
         fechaInicio.setMonth(fechaInicio.getMonth() - 1);
         const fechaInicioStr = fechaInicio.toISOString().split('T')[0];
         
-        // Total compras del mes
+        // Total compras del mes CORREGIDO para PostgreSQL
         const totalCompras = await db.get(`
             SELECT 
-                COALESCE(SUM(cg.total_pesos), 0) + COALESCE(SUM(cm.total_pesos), 0) as total
-            FROM 
-                (SELECT total_pesos FROM compras_generales WHERE fecha >= ?) cg
-            FULL OUTER JOIN 
-                (SELECT total_pesos FROM compras_materiales WHERE fecha >= ?) cm ON 1=1
-        `, [fechaInicioStr, fechaInicioStr]);
+                COALESCE(
+                    (SELECT SUM(total_pesos) FROM compras_generales WHERE fecha >= $1), 0
+                ) + COALESCE(
+                    (SELECT SUM(total_pesos) FROM compras_materiales WHERE fecha >= $1), 0
+                ) as total
+        `, [fechaInicioStr]);
         
         // Total ventas del mes
         const totalVentas = await db.get(`
             SELECT COALESCE(SUM(total_pesos), 0) as total 
             FROM ventas 
-            WHERE fecha >= ?
+            WHERE fecha >= $1
         `, [fechaInicioStr]);
         
         // Total gastos del mes
         const totalGastos = await db.get(`
             SELECT COALESCE(SUM(valor), 0) as total 
             FROM gastos 
-            WHERE fecha >= ?
+            WHERE fecha >= $1
         `, [fechaInicioStr]);
         
         // Materiales más vendidos
@@ -157,7 +204,7 @@ app.get('/api/dashboard', verificarToken, async (req, res) => {
             SELECT m.nombre, SUM(v.kilos) as total_kilos, SUM(v.total_pesos) as total_pesos
             FROM ventas v
             JOIN materiales m ON v.material_id = m.id
-            WHERE v.fecha >= ?
+            WHERE v.fecha >= $1
             GROUP BY m.id, m.nombre
             ORDER BY total_kilos DESC
             LIMIT 5
@@ -217,7 +264,7 @@ app.put('/api/usuarios/:id/toggle', verificarToken, verificarRol(['administrador
             });
         }
 
-        const usuario = await req.db.get('SELECT activo FROM usuarios WHERE id = ?', [id]);
+        const usuario = await req.db.get('SELECT activo FROM usuarios WHERE id = $1', [id]);
         
         if (!usuario) {
             return res.status(404).json({ error: 'Usuario no encontrado' });
@@ -226,7 +273,7 @@ app.put('/api/usuarios/:id/toggle', verificarToken, verificarRol(['administrador
         const nuevoEstado = !usuario.activo;
         
         await req.db.run(
-            'UPDATE usuarios SET activo = ?, fecha_actualizacion = CURRENT_TIMESTAMP WHERE id = ?',
+            'UPDATE usuarios SET activo = $1, fecha_actualizacion = CURRENT_TIMESTAMP WHERE id = $2',
             [nuevoEstado, id]
         );
 
@@ -240,7 +287,6 @@ app.put('/api/usuarios/:id/toggle', verificarToken, verificarRol(['administrador
     }
 });
 
-
 // Middleware de manejo de errores
 app.use((err, req, res, next) => {
     console.error('Error:', err);
@@ -253,11 +299,11 @@ app.use((err, req, res, next) => {
         });
     }
     
-    // Error de base de datos
-    if (err.code === 'SQLITE_ERROR') {
-        return res.status(500).json({
-            error: 'Error de base de datos',
-            message: 'Problema con la operación en la base de datos'
+    // Error de base de datos PostgreSQL
+    if (err.code && err.code.startsWith('23')) {  // PostgreSQL constraint errors
+        return res.status(400).json({
+            error: 'Error de restricción de base de datos',
+            message: 'Los datos violan las restricciones de la base de datos'
         });
     }
     
@@ -282,9 +328,6 @@ const startServer = async () => {
         // Inicializar base de datos
         await Database.initialize();
         console.log('Base de datos inicializada correctamente');
-        
-        // Inicializar tablas de autenticación
-        
         
         // Iniciar servidor
         app.listen(PORT, () => {

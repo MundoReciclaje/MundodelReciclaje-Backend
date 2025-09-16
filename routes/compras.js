@@ -296,7 +296,7 @@ router.get('/materiales', async (req, res) => {
         const total = totalResult.total;
 
         res.json({
-            data: compras,
+            compras,
             paginacion: {
                 pagina: parseInt(pagina),
                 limite: parseInt(limite),

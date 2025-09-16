@@ -425,12 +425,25 @@ router.get('/:tipo/:id', async (req, res) => {
 });
 
 // Actualizar compra
+// Actualizar compra - VERSIÓN CORREGIDA
 router.put('/:tipo/:id', async (req, res) => {
     try {
         const { tipo, id } = req.params;
         const datosActualizacion = { ...req.body };
 
-        if (tipo === 'general') {
+        // Normalizar el tipo para manejar tanto singular como plural
+        let tipoNormalizado;
+        if (tipo === 'general' || tipo === 'generales') {
+            tipoNormalizado = 'general';
+        } else if (tipo === 'material' || tipo === 'materiales') {
+            tipoNormalizado = 'material';
+        } else {
+            return res.status(400).json({ 
+                error: 'Tipo debe ser "general", "generales", "material" o "materiales"' 
+            });
+        }
+
+        if (tipoNormalizado === 'general') {
             // Validar campos específicos para compra general
             const { fecha, total_pesos, tipo_precio } = datosActualizacion;
             
@@ -451,10 +464,14 @@ router.put('/:tipo/:id', async (req, res) => {
             const setClause = campos.map(campo => `${campo} = ?`).join(', ');
             const valores = [...Object.values(datosActualizacion), id];
 
-            await req.db.run(
+            const resultado = await req.db.run(
                 `UPDATE compras_generales SET ${setClause} WHERE id = ?`,
                 valores
             );
+
+            if (resultado.changes === 0) {
+                return res.status(404).json({ error: 'Compra no encontrada' });
+            }
 
             const compraActualizada = await req.db.get(
                 'SELECT * FROM compras_generales WHERE id = ?',
@@ -463,7 +480,7 @@ router.put('/:tipo/:id', async (req, res) => {
 
             res.json(compraActualizada);
 
-        } else if (tipo === 'material') {
+        } else if (tipoNormalizado === 'material') {
             // Validar material si se está cambiando
             if (datosActualizacion.material_id) {
                 const material = await req.db.get(
@@ -485,6 +502,10 @@ router.put('/:tipo/:id', async (req, res) => {
                     [id]
                 );
 
+                if (!compraActual) {
+                    return res.status(404).json({ error: 'Compra no encontrada' });
+                }
+
                 const nuevosKilos = datosActualizacion.kilos || compraActual.kilos;
                 const nuevoPrecio = datosActualizacion.precio_kilo || compraActual.precio_kilo;
                 datosActualizacion.total_pesos = parseFloat(nuevosKilos) * parseFloat(nuevoPrecio);
@@ -495,10 +516,14 @@ router.put('/:tipo/:id', async (req, res) => {
             const setClause = campos.map(campo => `${campo} = ?`).join(', ');
             const valores = [...Object.values(datosActualizacion), id];
 
-            await req.db.run(
+            const resultado = await req.db.run(
                 `UPDATE compras_materiales SET ${setClause} WHERE id = ?`,
                 valores
             );
+
+            if (resultado.changes === 0) {
+                return res.status(404).json({ error: 'Compra no encontrada' });
+            }
 
             const compraActualizada = await req.db.get(`
                 SELECT 
@@ -511,34 +536,40 @@ router.put('/:tipo/:id', async (req, res) => {
             `, [id]);
 
             res.json(compraActualizada);
-
-        } else {
-            return res.status(400).json({ error: 'Tipo debe ser "general" o "material"' });
         }
     } catch (error) {
         console.error('Error actualizando compra:', error);
         res.status(500).json({ error: 'Error actualizando compra' });
     }
 });
-
 // Eliminar compra
 router.delete('/:tipo/:id', async (req, res) => {
     try {
         const { tipo, id } = req.params;
         let resultado;
 
-        if (tipo === 'general') {
+        // Normalizar el tipo para manejar tanto singular como plural
+        let tipoNormalizado;
+        if (tipo === 'general' || tipo === 'generales') {
+            tipoNormalizado = 'general';
+        } else if (tipo === 'material' || tipo === 'materiales') {
+            tipoNormalizado = 'material';
+        } else {
+            return res.status(400).json({ 
+                error: 'Tipo debe ser "general", "generales", "material" o "materiales"' 
+            });
+        }
+
+        if (tipoNormalizado === 'general') {
             resultado = await req.db.run(
                 'DELETE FROM compras_generales WHERE id = ?',
                 [id]
             );
-        } else if (tipo === 'material') {
+        } else if (tipoNormalizado === 'material') {
             resultado = await req.db.run(
                 'DELETE FROM compras_materiales WHERE id = ?',
                 [id]
             );
-        } else {
-            return res.status(400).json({ error: 'Tipo debe ser "general" o "material"' });
         }
 
         if (resultado.changes === 0) {
@@ -551,7 +582,6 @@ router.delete('/:tipo/:id', async (req, res) => {
         res.status(500).json({ error: 'Error eliminando compra' });
     }
 });
-
 // Estadísticas de compras
 router.get('/estadisticas/resumen', async (req, res) => {
     try {

@@ -5,6 +5,109 @@ const express = require('express');
 const router = express.Router();
 
 // ================================
+// AUTOCOMPLETADO DE CLIENTES
+// ================================
+
+// Obtener lista de clientes para autocompletado
+router.get('/clientes/lista', async (req, res) => {
+    try {
+        const { buscar, tipo } = req.query;
+
+        // Validar parámetro buscar
+        if (!buscar || buscar.trim().length < 2) {
+            return res.status(400).json({ 
+                error: 'Parámetro buscar debe tener al menos 2 caracteres' 
+            });
+        }
+
+        // Normalizar el parámetro tipo (manejar arrays y undefined)
+        const tipoNormalizado = Array.isArray(tipo) ? tipo[0] : tipo;
+
+        // Validar tipo solo si se proporciona
+        if (tipoNormalizado && !['general', 'material'].includes(tipoNormalizado)) {
+            return res.status(400).json({ 
+                error: 'Tipo debe ser "general" o "material"' 
+            });
+        }
+
+        const busqueda = buscar.trim();
+        let clientes = [];
+
+        if (tipoNormalizado === 'material') {
+            // Buscar en compras_materiales
+            clientes = await req.db.all(`
+                SELECT DISTINCT cliente 
+                FROM compras_materiales 
+                WHERE cliente LIKE ? 
+                  AND cliente IS NOT NULL 
+                  AND cliente != ''
+                ORDER BY cliente ASC 
+                LIMIT 10
+            `, [`%${busqueda}%`]);
+
+        } else if (tipoNormalizado === 'general') {
+            // Buscar en compras_generales (verificar si tienen campo cliente)
+            try {
+                clientes = await req.db.all(`
+                    SELECT DISTINCT cliente 
+                    FROM compras_generales 
+                    WHERE cliente LIKE ? 
+                      AND cliente IS NOT NULL 
+                      AND cliente != ''
+                    ORDER BY cliente ASC 
+                    LIMIT 10
+                `, [`%${busqueda}%`]);
+            } catch (error) {
+                // Si la columna cliente no existe en compras_generales
+                console.log('Campo cliente no existe en compras_generales, devolviendo array vacío');
+                clientes = [];
+            }
+
+        } else {
+            // Si no se especifica tipo, buscar en ambas tablas
+            const clientesMateriales = await req.db.all(`
+                SELECT DISTINCT cliente 
+                FROM compras_materiales 
+                WHERE cliente LIKE ? 
+                  AND cliente IS NOT NULL 
+                  AND cliente != ''
+                LIMIT 5
+            `, [`%${busqueda}%`]);
+
+            let clientesGenerales = [];
+            try {
+                clientesGenerales = await req.db.all(`
+                    SELECT DISTINCT cliente 
+                    FROM compras_generales 
+                    WHERE cliente LIKE ? 
+                      AND cliente IS NOT NULL 
+                      AND cliente != ''
+                    LIMIT 5
+                `, [`%${busqueda}%`]);
+            } catch (error) {
+                // Si la columna cliente no existe en compras_generales
+                console.log('Campo cliente no existe en compras_generales');
+                clientesGenerales = [];
+            }
+
+            // Combinar y eliminar duplicados
+            const todosClientes = [...clientesMateriales, ...clientesGenerales];
+            const nombresUnicos = [...new Set(todosClientes.map(c => c.cliente))];
+            clientes = nombresUnicos.slice(0, 10).map(nombre => ({ cliente: nombre }));
+        }
+
+        // Extraer solo los nombres de cliente
+        const nombresClientes = clientes.map(c => c.cliente);
+
+        res.json(nombresClientes);
+
+    } catch (error) {
+        console.error('Error buscando clientes:', error);
+        res.status(500).json({ error: 'Error interno del servidor' });
+    }
+});
+
+// ================================
 // COMPRAS GENERALES (sin separar por material)
 // ================================
 
@@ -125,6 +228,7 @@ router.get('/materiales', async (req, res) => {
             fecha_fin, 
             material_id, 
             tipo_precio, 
+            cliente,
             limite = 100, 
             pagina = 1 
         } = req.query;
@@ -160,6 +264,11 @@ router.get('/materiales', async (req, res) => {
             params.push(tipo_precio);
         }
 
+        if (cliente) {
+            conditions.push('cm.cliente LIKE ?');
+            params.push(`%${cliente}%`);
+        }
+
         if (conditions.length > 0) {
             sql += ' WHERE ' + conditions.join(' AND ');
         }
@@ -187,7 +296,7 @@ router.get('/materiales', async (req, res) => {
         const total = totalResult.total;
 
         res.json({
-            compras,
+            data: compras,
             paginacion: {
                 pagina: parseInt(pagina),
                 limite: parseInt(limite),
@@ -209,7 +318,8 @@ router.post('/materiales', async (req, res) => {
             fecha, 
             kilos, 
             precio_kilo, 
-            tipo_precio, 
+            tipo_precio,
+            cliente, 
             observaciones 
         } = req.body;
 
@@ -252,9 +362,9 @@ router.post('/materiales', async (req, res) => {
 
         const resultado = await req.db.run(`
             INSERT INTO compras_materiales (
-                material_id, fecha, kilos, precio_kilo, total_pesos, tipo_precio, observaciones
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        `, [material_id, fecha, kilos, precio_kilo, total_pesos, tipo_precio, observaciones]);
+                material_id, fecha, kilos, precio_kilo, total_pesos, tipo_precio, cliente, observaciones
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `, [material_id, fecha, kilos, precio_kilo, total_pesos, tipo_precio, cliente, observaciones]);
 
         // Obtener la compra recién creada con información del material
         const nuevaCompra = await req.db.get(`

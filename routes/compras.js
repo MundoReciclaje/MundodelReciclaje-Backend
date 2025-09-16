@@ -618,4 +618,209 @@ router.get('/estadisticas/resumen', async (req, res) => {
     }
 });
 
+// ================================
+// RUTAS ESPECÍFICAS PARA COMPATIBILIDAD CON FRONTEND
+// ================================
+
+// Obtener compra por material específica
+router.get('/materiales/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        const compra = await req.db.get(`
+            SELECT 
+                cm.*,
+                m.nombre as material_nombre,
+                m.categoria as material_categoria
+            FROM compras_materiales cm
+            JOIN materiales m ON cm.material_id = m.id
+            WHERE cm.id = ?
+        `, [id]);
+
+        if (!compra) {
+            return res.status(404).json({ error: 'Compra no encontrada' });
+        }
+
+        res.json(compra);
+    } catch (error) {
+        console.error('Error obteniendo compra por material:', error);
+        res.status(500).json({ error: 'Error obteniendo compra' });
+    }
+});
+
+// Actualizar compra por material específica
+router.put('/materiales/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const datosActualizacion = { ...req.body };
+
+        // Validar material si se está cambiando
+        if (datosActualizacion.material_id) {
+            const material = await req.db.get(
+                'SELECT * FROM materiales WHERE id = ? AND activo = 1',
+                [datosActualizacion.material_id]
+            );
+
+            if (!material) {
+                return res.status(404).json({
+                    error: 'Material no encontrado o inactivo'
+                });
+            }
+        }
+
+        // Recalcular total si cambian kilos o precio
+        if (datosActualizacion.kilos || datosActualizacion.precio_kilo) {
+            const compraActual = await req.db.get(
+                'SELECT kilos, precio_kilo FROM compras_materiales WHERE id = ?',
+                [id]
+            );
+
+            if (!compraActual) {
+                return res.status(404).json({ error: 'Compra no encontrada' });
+            }
+
+            const nuevosKilos = datosActualizacion.kilos || compraActual.kilos;
+            const nuevoPrecio = datosActualizacion.precio_kilo || compraActual.precio_kilo;
+            datosActualizacion.total_pesos = parseFloat(nuevosKilos) * parseFloat(nuevoPrecio);
+        }
+
+        // Actualizar
+        const campos = Object.keys(datosActualizacion);
+        const setClause = campos.map(campo => `${campo} = ?`).join(', ');
+        const valores = [...Object.values(datosActualizacion), id];
+
+        const resultado = await req.db.run(
+            `UPDATE compras_materiales SET ${setClause} WHERE id = ?`,
+            valores
+        );
+
+        if (resultado.changes === 0) {
+            return res.status(404).json({ error: 'Compra no encontrada' });
+        }
+
+        const compraActualizada = await req.db.get(`
+            SELECT 
+                cm.*,
+                m.nombre as material_nombre,
+                m.categoria as material_categoria
+            FROM compras_materiales cm
+            JOIN materiales m ON cm.material_id = m.id
+            WHERE cm.id = ?
+        `, [id]);
+
+        res.json(compraActualizada);
+
+    } catch (error) {
+        console.error('Error actualizando compra por material:', error);
+        res.status(500).json({ error: 'Error actualizando compra' });
+    }
+});
+
+// Eliminar compra por material específica
+router.delete('/materiales/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        const resultado = await req.db.run(
+            'DELETE FROM compras_materiales WHERE id = ?',
+            [id]
+        );
+
+        if (resultado.changes === 0) {
+            return res.status(404).json({ error: 'Compra no encontrada' });
+        }
+
+        res.json({ message: 'Compra eliminada correctamente' });
+    } catch (error) {
+        console.error('Error eliminando compra por material:', error);
+        res.status(500).json({ error: 'Error eliminando compra' });
+    }
+});
+
+// Rutas similares para compras generales (si las necesitas)
+router.get('/generales/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        const compra = await req.db.get(
+            'SELECT * FROM compras_generales WHERE id = ?',
+            [id]
+        );
+
+        if (!compra) {
+            return res.status(404).json({ error: 'Compra no encontrada' });
+        }
+
+        res.json(compra);
+    } catch (error) {
+        console.error('Error obteniendo compra general:', error);
+        res.status(500).json({ error: 'Error obteniendo compra' });
+    }
+});
+
+router.put('/generales/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const datosActualizacion = { ...req.body };
+        
+        const { total_pesos, tipo_precio } = datosActualizacion;
+        
+        if (total_pesos !== undefined && parseFloat(total_pesos) <= 0) {
+            return res.status(400).json({
+                error: 'El total debe ser mayor a cero'
+            });
+        }
+
+        if (tipo_precio && !['ordinario', 'camion', 'noche'].includes(tipo_precio)) {
+            return res.status(400).json({
+                error: 'Tipo de precio debe ser: ordinario, camion o noche'
+            });
+        }
+
+        const campos = Object.keys(datosActualizacion);
+        const setClause = campos.map(campo => `${campo} = ?`).join(', ');
+        const valores = [...Object.values(datosActualizacion), id];
+
+        const resultado = await req.db.run(
+            `UPDATE compras_generales SET ${setClause} WHERE id = ?`,
+            valores
+        );
+
+        if (resultado.changes === 0) {
+            return res.status(404).json({ error: 'Compra no encontrada' });
+        }
+
+        const compraActualizada = await req.db.get(
+            'SELECT * FROM compras_generales WHERE id = ?',
+            [id]
+        );
+
+        res.json(compraActualizada);
+
+    } catch (error) {
+        console.error('Error actualizando compra general:', error);
+        res.status(500).json({ error: 'Error actualizando compra' });
+    }
+});
+
+router.delete('/generales/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        const resultado = await req.db.run(
+            'DELETE FROM compras_generales WHERE id = ?',
+            [id]
+        );
+
+        if (resultado.changes === 0) {
+            return res.status(404).json({ error: 'Compra no encontrada' });
+        }
+
+        res.json({ message: 'Compra eliminada correctamente' });
+    } catch (error) {
+        console.error('Error eliminando compra general:', error);
+        res.status(500).json({ error: 'Error eliminando compra' });
+    }
+});
+
 module.exports = router;

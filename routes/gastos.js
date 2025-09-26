@@ -161,7 +161,21 @@ router.get('/:id', async (req, res) => {
 // Crear nuevo gasto
 router.post('/', async (req, res) => {
     try {
+        // 🔍 DEBUG: Ver todos los datos que llegan
+        console.log('🔍 req.body completo:', JSON.stringify(req.body, null, 2));
+        console.log('🔍 Tipos de cada campo:');
+        Object.keys(req.body).forEach(key => {
+            console.log(`   ${key}: ${typeof req.body[key]} = "${req.body[key]}"`);
+        });
+
         const { categoria_id, fecha, concepto, valor, observaciones } = req.body;
+
+        console.log('🔍 Después de destructuring:');
+        console.log(`   categoria_id: ${typeof categoria_id} = "${categoria_id}"`);
+        console.log(`   fecha: ${typeof fecha} = "${fecha}"`);
+        console.log(`   concepto: ${typeof concepto} = "${concepto}"`);
+        console.log(`   valor: ${typeof valor} = "${valor}"`);
+        console.log(`   observaciones: ${typeof observaciones} = "${observaciones}"`);
 
         // Validar campos requeridos
         if (!categoria_id || !fecha || !concepto || !valor) {
@@ -172,17 +186,25 @@ router.post('/', async (req, res) => {
 
         // Convertir categoria_id a entero y validar
         const categoriaIdInt = parseInt(categoria_id, 10);
+        console.log(`🔍 categoria_id convertido: ${categoriaIdInt} (${typeof categoriaIdInt})`);
+        
         if (isNaN(categoriaIdInt) || categoriaIdInt <= 0) {
+            console.log('❌ categoria_id no es válido:', categoriaIdInt);
             return res.status(400).json({
                 error: 'ID de categoría debe ser un número entero válido'
             });
         }
 
+        console.log('🔍 Ejecutando consulta de validación de categoría...');
+        console.log('🔍 Parámetros para consulta:', [categoriaIdInt]);
+
         // Validar que la categoría existe
         const categoria = await req.db.get(
             'SELECT * FROM categorias_gastos WHERE id = ? AND activo = 1',
-            [categoriaIdInt] // Usar el valor convertido a entero
+            [categoriaIdInt] // Línea 182 aproximadamente
         );
+
+        console.log('🔍 Resultado consulta categoría:', categoria);
 
         if (!categoria) {
             return res.status(404).json({
@@ -198,6 +220,7 @@ router.post('/', async (req, res) => {
             });
         }
 
+        console.log('🔍 Ejecutando INSERT...');
         const resultado = await req.db.run(`
             INSERT INTO gastos (categoria_id, fecha, concepto, valor, observaciones)
             VALUES (?, ?, ?, ?, ?)
@@ -214,9 +237,11 @@ router.post('/', async (req, res) => {
             WHERE g.id = ?
         `, [resultado.lastID]);
 
+        console.log('✅ Gasto creado exitosamente');
         res.status(201).json(nuevoGasto);
     } catch (error) {
-        console.error('Error creando gasto:', error);
+        console.error('❌ Error creando gasto:', error);
+        console.error('❌ Stack trace completo:', error.stack);
         res.status(500).json({ error: 'Error creando gasto' });
     }
 });

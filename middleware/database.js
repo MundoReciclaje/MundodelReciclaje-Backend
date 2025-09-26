@@ -92,10 +92,32 @@ function convertSQLiteToPostgreSQL(sql, params) {
         let paramIndex = 1;
         query = sql.replace(/\?/g, () => `$${paramIndex++}`);
         
-        // Convertir valores boolean (1/0 a true/false)
-        parameters = params.map(param => {
-            if (param === 1 && (query.includes('activo') || query.includes('boolean'))) return true;
-            if (param === 0 && (query.includes('activo') || query.includes('boolean'))) return false;
+        // ⭐ CORRECCIÓN: Solo convertir valores boolean si están en posiciones específicas
+        // En lugar de convertir automáticamente por la presencia de la palabra "activo"
+        
+        // Buscar si hay comparaciones directas con activo = ? para convertir esos parámetros
+        const activoMatches = [...sql.matchAll(/\bactivo\s*[=!<>]+\s*\?/gi)];
+        const activoPositions = [];
+        
+        let paramPosition = 0;
+        for (let i = 0; i < sql.length; i++) {
+            if (sql[i] === '?') {
+                // Verificar si este ? está asociado con activo
+                const beforeQuestion = sql.substring(Math.max(0, i - 20), i);
+                if (/\bactivo\s*[=!<>]+\s*$/.test(beforeQuestion)) {
+                    activoPositions.push(paramPosition);
+                }
+                paramPosition++;
+            }
+        }
+        
+        // Convertir solo los parámetros que están realmente asociados con campos boolean
+        parameters = params.map((param, index) => {
+            if (activoPositions.includes(index)) {
+                // Solo estos parámetros deben ser convertidos de 1/0 a true/false
+                if (param === 1) return true;
+                if (param === 0) return false;
+            }
             return param;
         });
     }
@@ -109,7 +131,7 @@ function convertSQLiteToPostgreSQL(sql, params) {
         // Convertir BOOLEAN DEFAULT 1/0 a BOOLEAN DEFAULT true/false
         .replace(/BOOLEAN DEFAULT 1/gi, 'BOOLEAN DEFAULT true')
         .replace(/BOOLEAN DEFAULT 0/gi, 'BOOLEAN DEFAULT false')
-        // Convertir comparaciones boolean hardcoded
+        // Convertir comparaciones boolean hardcoded EN LA QUERY (no en parámetros)
         .replace(/\bactivo\s*=\s*1\b/gi, 'activo = true')
         .replace(/\bactivo\s*=\s*0\b/gi, 'activo = false')
         .replace(/\bactivo\s*!=\s*1\b/gi, 'activo != true')
@@ -129,13 +151,10 @@ function convertSQLiteToPostgreSQL(sql, params) {
         .replace(/\bSUM\s*\(\s*([^)]+)\s*\)/gi, 'COALESCE(SUM($1), 0)')
         .replace(/\bAVG\s*\(\s*([^)]+)\s*\)/gi, 'COALESCE(AVG($1), 0)')
         .replace(/\bCOUNT\s*\(\s*([^)]+)\s*\)/gi, 'COALESCE(COUNT($1), 0)')
-        // Manejar LIMIT y OFFSET (PostgreSQL los soporta igual)
-        // Manejar subconsultas y JOINs (la mayoría son compatibles)
         ;
 
     return { query, parameters };
 }
-
 // Función helper para convertir resultados de PostgreSQL a formato compatible
 function convertPostgreSQLResults(rows) {
     if (!rows || !Array.isArray(rows)) return rows;

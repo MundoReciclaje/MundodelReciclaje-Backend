@@ -170,10 +170,18 @@ router.post('/', async (req, res) => {
             });
         }
 
+        // Convertir categoria_id a entero y validar
+        const categoriaIdInt = parseInt(categoria_id, 10);
+        if (isNaN(categoriaIdInt) || categoriaIdInt <= 0) {
+            return res.status(400).json({
+                error: 'ID de categoría debe ser un número entero válido'
+            });
+        }
+
         // Validar que la categoría existe
         const categoria = await req.db.get(
             'SELECT * FROM categorias_gastos WHERE id = ? AND activo = 1',
-            [categoria_id]
+            [categoriaIdInt] // Usar el valor convertido a entero
         );
 
         if (!categoria) {
@@ -182,17 +190,18 @@ router.post('/', async (req, res) => {
             });
         }
 
-        // Validar que el valor sea positivo
-        if (parseFloat(valor) <= 0) {
+        // Convertir valor a float y validar
+        const valorFloat = parseFloat(valor);
+        if (isNaN(valorFloat) || valorFloat <= 0) {
             return res.status(400).json({
-                error: 'El valor debe ser mayor a cero'
+                error: 'El valor debe ser un número mayor a cero'
             });
         }
 
         const resultado = await req.db.run(`
             INSERT INTO gastos (categoria_id, fecha, concepto, valor, observaciones)
             VALUES (?, ?, ?, ?, ?)
-        `, [categoria_id, fecha, concepto, valor, observaciones]);
+        `, [categoriaIdInt, fecha, concepto, valorFloat, observaciones]);
 
         // Obtener el gasto recién creado con información de la categoría
         const nuevoGasto = await req.db.get(`
@@ -211,7 +220,6 @@ router.post('/', async (req, res) => {
         res.status(500).json({ error: 'Error creando gasto' });
     }
 });
-
 // Actualizar gasto
 router.put('/:id', async (req, res) => {
     try {
